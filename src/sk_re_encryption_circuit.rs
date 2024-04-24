@@ -17,7 +17,7 @@ use serde::Deserialize;
 use crate::poly::{Poly, PolyAssigned};
 
 /// Helper function to define the parameters of the RlcCircuit. This is a non-optimized configuration that makes use of a single advice column. Use this for testing purposes only.
-fn re_enctest_params() -> RlcCircuitParams {
+fn re_enc_test_params() -> RlcCircuitParams {
     RlcCircuitParams {
         base: BaseCircuitParams {
             k: 21,
@@ -57,6 +57,16 @@ pub struct BfvSkReEncryptionCircuit {
     r1is: Vec<Vec<String>>,
     ais: Vec<Vec<String>>,
     ct0is: Vec<Vec<String>>,
+}
+impl BfvSkReEncryptionCircuit {
+    fn params_test(&self) {
+        assert_eq!(self.ais_pre, self.ais);
+        assert_eq!(self.s_pre, self.s);
+        assert_eq!(self.r2is_pre, self.r2is);
+        assert_eq!(self.r1is_pre, self.r1is);
+        assert_eq!(self.e_pre, self.e);
+        assert_eq!(self.ct0is_pre, self.ct0is);
+    }
 }
 
 /// Payload returned by the first phase of the circuit to be reused in the second phase
@@ -223,7 +233,12 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkReEncryptionCircuit {
             // CORRECT ENCRYPTION CONSTRAINT
 
             // rhs = ai(gamma) * s(gamma) + e(gamma)
-            let rhs = gate.mul_add(ctx_gate, ais_pre_at_gamma_assigned[z], s_pre_at_gamma, e_pre_at_gamma);
+            let rhs = gate.mul_add(
+                ctx_gate,
+                ais_pre_at_gamma_assigned[z],
+                s_pre_at_gamma,
+                e_pre_at_gamma,
+            );
 
             // rhs = rhs + k1(gamma) * k0i
             let rhs = gate.mul_add(ctx_gate, k1_at_gamma, k0i_constants[z], rhs);
@@ -239,7 +254,6 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkReEncryptionCircuit {
             let res = gate.is_equal(ctx_gate, lhs, rhs);
             gate.assert_is_const(ctx_gate, &res, &F::from(1));
         }
-
 
         ///////
         let mut ais_at_gamma_assigned = vec![];
@@ -260,7 +274,6 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkReEncryptionCircuit {
         // RANGE CHECK
         s_assigned.range_check(ctx_gate, range, S_BOUND);
         e_assigned.range_check(ctx_gate, range, E_BOUND);
-        k1_assigned.range_check(ctx_gate, range, K1_BOUND);
 
         for z in 0..ct0is.len() {
             r2is_assigned[z].range_check(ctx_gate, range, R2_BOUNDS[z]);
@@ -271,7 +284,6 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkReEncryptionCircuit {
 
         let s_at_gamma = s_assigned.enforce_eval_at_gamma(ctx_rlc, rlc);
         let e_at_gamma = e_assigned.enforce_eval_at_gamma(ctx_rlc, rlc);
-        let k1_at_gamma = k1_assigned.enforce_eval_at_gamma(ctx_rlc, rlc);
 
         // For each `i` Prove that LHS(gamma) = RHS(gamma)
         // LHS = ct0i(gamma)
@@ -299,5 +311,58 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkReEncryptionCircuit {
             let res = gate.is_equal(ctx_gate, lhs, rhs);
             gate.assert_is_const(ctx_gate, &res, &F::from(1));
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::re_enc_test_params;
+    use crate::{
+        constants::sk_enc_constants_4096_2x55_65537::R1_BOUNDS,
+        sk_re_encryption_circuit::BfvSkReEncryptionCircuit,
+    };
+    use axiom_eth::rlc::{circuit::builder::RlcCircuitBuilder, utils::executor::RlcExecutor};
+    use halo2_base::{
+        gates::circuit::CircuitBuilderStage,
+        halo2_proofs::{
+            dev::{FailureLocation, MockProver, VerifyFailure},
+            halo2curves::bn256::Fr,
+            plonk::{keygen_pk, keygen_vk, Any, SecondPhase},
+        },
+        utils::{
+            fs::gen_srs,
+            testing::{check_proof, gen_proof},
+        },
+    };
+    use std::{fs::File, io::Read};
+    #[test]
+    pub fn test_sk_re_enc_valid() {
+        // 1. Define the inputs of the circuit
+        let file_path = "src/data/sk_re_enc_4096_2x55_65537.json";
+        let mut file = File::open(file_path).unwrap();
+        let mut data = String::new();
+        file.read_to_string(&mut data).unwrap();
+        let sk_re_enc_circuit = serde_json::from_str::<BfvSkReEncryptionCircuit>(&data).unwrap();
+
+        sk_re_enc_circuit.params_test();
+
+        // 2. Build the circuit for MockProver using the test parameters
+        let rlc_circuit_params = re_enc_test_params();
+        let mut mock_builder: RlcCircuitBuilder<Fr> =
+            RlcCircuitBuilder::from_stage(CircuitBuilderStage::Mock, 0)
+                .use_params(rlc_circuit_params.clone());
+        mock_builder.base.set_lookup_bits(8);
+
+        let rlc_circuit = RlcExecutor::new(mock_builder, sk_re_enc_circuit);
+
+        // 3. Run the mock prover. The circuit should be satisfied
+        MockProver::run(
+            rlc_circuit_params.base.k.try_into().unwrap(),
+            &rlc_circuit,
+            vec![],
+        )
+        .unwrap()
+        .assert_satisfied();
     }
 }
