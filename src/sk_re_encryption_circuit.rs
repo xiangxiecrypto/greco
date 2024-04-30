@@ -149,7 +149,7 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkReEncryptionCircuit {
             r2is_assigned,
             r1is_assigned,
             ais: self.ais.clone(),
-            ct0is: self.ais.clone(),
+            ct0is: self.ct0is.clone(),
         }
     }
 
